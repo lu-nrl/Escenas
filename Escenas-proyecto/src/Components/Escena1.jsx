@@ -26,9 +26,8 @@ const Escena1 = () => {
       <div
         className="position-absolute"
         style={{
-          // Mueve estos porcentajes si necesitas afinar la posición
-          bottom: "-2%", // Aumenta para subirlo, disminuye para bajarlo
-          left: "-15%",    // Disminuye (incluso a valores negativos como "-5%") para moverlo a la izquierda
+          bottom: "-2%", 
+          left: "-15%",   
           cursor: "pointer",
           width: "250px",
           height: "600px",
@@ -55,15 +54,14 @@ const Escena1 = () => {
             transition: "opacity 0.5s ease-in-out",
           }}
         />
-      </div>
+      </div> 
 
-      {/* LA CASA */}
+     
       <div
         className="position-absolute"
         style={{
-          // Mueve estos porcentajes si necesitas afinar la posición
-          bottom: "25%", // Aumenta para subirla, disminuye para bajarla
-          right: "22%",  // Aumenta este número para alejarla del borde derecho
+          bottom: "25%", 
+          right: "22%",  
           cursor: "pointer",
           width: "500px", 
           height: "500px",

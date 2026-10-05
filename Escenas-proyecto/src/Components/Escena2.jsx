@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Trophy } from "lucide-react";
+   import { ubicarPiezas } from "./ubicarPiezas";
 
-const NUMEROS = [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 8];
+
+const NUMEROS = [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 8]; // frente -> fondo
 const RUTA = "/Material/1x/Piezas/1x/";
+const COMPLETO = "/Material/castillo.png";
 const archivo = (n) => encodeURI(`${RUTA}Recurso ${n}.png`);
-const CAPAS = NUMEROS.map((n) => `recurso-${n}`);
-const SNAP = 35; 
-const ALTO_BANDEJA = 500; // Espacio vertical generoso para la zona inferior de piezas
+const SNAP = 24;   // distancia para que la pieza encaje
+const PAD = 16;    // margen del escenario
+const GAP = 24;    // separación entre tablero y bandeja
+const BANDEJA = 1.3; // ancho de la bandeja = 1.3 x ancho del castillo
 
 const cargarImagen = (src) =>
   new Promise((ok, fallo) => {
@@ -16,12 +19,17 @@ const cargarImagen = (src) =>
     img.src = src;
   });
 
-function analizar(img) {
-  const w = img.naturalWidth, h = img.naturalHeight;
+const lienzo = (img) => {
   const c = document.createElement("canvas");
-  c.width = w; c.height = h;
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
+  return ctx;
+};
+
+
+function recortar(img) {
+  const ctx = lienzo(img), w = img.naturalWidth, h = img.naturalHeight;
   const d = ctx.getImageData(0, 0, w, h).data;
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
   for (let y = 0; y < h; y++)
@@ -32,23 +40,35 @@ function analizar(img) {
       }
   if (x1 < 0) return null;
   const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
-  const alpha = new Uint8Array(bw * bh);
-  for (let y = 0; y < bh; y++)
-    for (let x = 0; x < bw; x++)
-      alpha[y * bw + x] = d[((y + y0) * w + (x + x0)) * 4 + 3];
-  return { bx: x0, by: y0, bw, bh, alpha };
+  return { w: bw, h: bh, data: ctx.getImageData(x0, y0, bw, bh).data, tx: x0, ty: y0, iw: w, ih: h };
 }
 
-const fmt = (s) =>
-  `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+function acomodar(lista, W, H) {
+  const TW = Math.round(W * BANDEJA);
+  const x0 = PAD + W + GAP;
+  let x = 0, y = 0, fila = 0;
+  const mezcladas = [...lista].sort(() => Math.random() - 0.5);
+  const pos = {};
+  mezcladas.forEach((p) => {
+    if (x + p.w > TW && x > 0) { x = 0; y += fila + 10; fila = 0; }
+    pos[p.id] = { x: x0 + x, y: PAD + y };
+    x += p.w + 10; fila = Math.max(fila, p.h);
+  });
+  const TH = y + fila;
+  return { pos, SW: x0 + TW + PAD, SH: Math.max(H, TH) + PAD * 2 };
+}
+
+const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
 export default function Escena2() {
-  const [dim, setDim] = useState(null);
+  const [info, setInfo] = useState(null); // { W, H, SW, SH }
   const [piezas, setPiezas] = useState([]);
+  const [escala, setEscala] = useState(1);
   const [guia, setGuia] = useState(true);
   const [pista, setPista] = useState(null);
   const [movs, setMovs] = useState(0);
   const [seg, setSeg] = useState(0);
+  const [dudosas, setDudosas] = useState([]);
   const [error, setError] = useState("");
 
   const wrapRef = useRef(null);
@@ -57,82 +77,67 @@ export default function Escena2() {
   const drag = useRef(null);
   const zTop = useRef(100);
 
-  const repartir = useCallback((lista, W, H, stageH) => {
+  const repartir = useCallback((lista, W, H) => {
+    const { pos, SW, SH } = acomodar(lista, W, H);
     zTop.current = 100;
-    return lista
-      .map((p) => ({
-        ...p,
-        x: Math.random() * Math.max(10, W - p.bw - 40) + 20,
-        y: H + 20 + Math.random() * Math.max(10, stageH - H - p.bh - 40),
-        z: ++zTop.current,
-        locked: false,
-        dragging: false,
-      }))
-      .sort(() => Math.random() - 0.5);
+    setInfo({ W, H, SW, SH });
+    setPiezas(lista.map((p) => ({ ...p, ...pos[p.id], z: ++zTop.current, locked: false, dragging: false })));
   }, []);
 
+  
   useEffect(() => {
     (async () => {
       try {
         const imgs = await Promise.all(NUMEROS.map((n) => cargarImagen(archivo(n))));
-        const W_real = imgs[0].naturalWidth;
-        const H = imgs[0].naturalHeight;
-        
-        const screenW = Math.max(window.innerWidth - 32, W_real + 400);
-        const offsetX = (screenW - W_real) / 2;
-        const stageH = H + ALTO_BANDEJA;
+        const rec = imgs.map(recortar);
+        const completo = await cargarImagen(COMPLETO).catch(() => null);
+        let W, H, homes;
 
-        base.current = imgs
-          .map((img, i) => {
-            const a = analizar(img);
-            return a && { 
-              id: CAPAS[i], 
-              src: archivo(NUMEROS[i]), 
-              zFinal: CAPAS.length - i, 
-              ...a, 
-              bx: a.bx + offsetX 
-            };
-          })
-          .filter(Boolean);
+        if (completo) {
+          W = completo.naturalWidth; H = completo.naturalHeight;
+          const ctx = lienzo(completo);
+          const comp = { w: W, h: H, data: ctx.getImageData(0, 0, W, H).data };
+          homes = ubicarPiezas(comp, rec);
+        } else if (rec.every((r) => r.iw === rec[0].iw && r.ih === rec[0].ih)) {
+          W = rec[0].iw; H = rec[0].ih;
+          homes = rec.map((r) => ({ x: r.tx, y: r.ty, dudosa: false }));
+        } else {
+          throw new Error("Falta el castillo completo: guarda su PNG en public/Material/castillo.png (exportado a 1x).");
+        }
 
-        setDim({ W: screenW, H, W_real, offsetX, stageH });
-        setPiezas(repartir(base.current, screenW, H, stageH));
+        base.current = rec.map((r, i) => ({
+          ...r, id: `p${NUMEROS[i]}`, n: NUMEROS[i], src: archivo(NUMEROS[i]),
+          hx: PAD + homes[i].x, hy: PAD + homes[i].y, zFinal: NUMEROS.length - i,
+        }));
+        setDudosas(homes.map((h, i) => (h.dudosa ? NUMEROS[i] : null)).filter(Boolean));
+        repartir(base.current, W, H);
       } catch (e) {
         setError(e.message);
       }
     })();
   }, [repartir]);
 
+  
   useEffect(() => {
-    const handleResize = () => {
-      if (!base.current.length || !dim) return;
-      const screenW = Math.max(window.innerWidth - 32, dim.W_real + 400);
-      const offsetX = (screenW - dim.W_real) / 2;
-      const stageH = dim.H + ALTO_BANDEJA;
-
-      base.current = base.current.map(p => {
-        const relBx = p.bx - dim.offsetX;
-        return { ...p, bx: relBx + offsetX };
-      });
-
-      setDim(d => ({ ...d, W: screenW, offsetX }));
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [dim]);
+    if (!info || !wrapRef.current) return;
+    const ro = new ResizeObserver(([e]) => setEscala(Math.min(e.contentRect.width / info.SW, 1.5)));
+    ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, [info]);
 
   const colocadas = piezas.filter((p) => p.locked).length;
   const gano = piezas.length > 0 && colocadas === piezas.length;
 
   useEffect(() => {
-    if (!dim || gano) return;
+    if (!info || gano) return;
     const t = setInterval(() => setSeg((s) => s + 1), 1000);
     return () => clearInterval(t);
-  }, [dim, gano]);
+  }, [info, gano]);
 
   const local = (e) => {
     const r = stageRef.current.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const k = r.width / info.SW;
+    return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
   };
 
   const alPresionar = (e) => {
@@ -142,7 +147,7 @@ export default function Escena2() {
       .sort((a, b) => b.z - a.z)
       .find((p) => {
         const lx = Math.floor(x - p.x), ly = Math.floor(y - p.y);
-        return lx >= 0 && ly >= 0 && lx < p.bw && ly < p.bh && p.alpha[ly * p.bw + lx] > 10;
+        return lx >= 0 && ly >= 0 && lx < p.w && ly < p.h && p.data[(ly * p.w + lx) * 4 + 3] > 10;
       });
     if (!hit) return;
     stageRef.current.setPointerCapture(e.pointerId);
@@ -166,196 +171,114 @@ export default function Escena2() {
     setPiezas((ps) =>
       ps.map((p) => {
         if (p.id !== id) return p;
-        const encaja = Math.hypot(p.x - p.bx, p.y - p.by) < SNAP;
-        return encaja
-          ? { ...p, x: p.bx, y: p.by, z: p.zFinal, locked: true, dragging: false }
+        return Math.hypot(p.x - p.hx, p.y - p.hy) < SNAP
+          ? { ...p, x: p.hx, y: p.hy, z: p.zFinal, locked: true, dragging: false }
           : { ...p, dragging: false };
       })
     );
   };
 
-  const reiniciar = () => {
-    setPiezas(repartir(base.current, dim.W, dim.H, dim.stageH));
-    setMovs(0); setSeg(0); setPista(null);
-  };
+  const reiniciar = () => { repartir(base.current, info.W, info.H); setMovs(0); setSeg(0); setPista(null); };
 
   const darPista = () => {
     const libres = piezas.filter((p) => !p.locked);
     if (!libres.length) return;
-    const p = libres[Math.floor(Math.random() * libres.length)];
-    setPista(p.id);
+    setPista(libres[Math.floor(Math.random() * libres.length)].id);
     setTimeout(() => setPista(null), 2000);
   };
 
   if (error)
+    return <div className="container py-4"><div className="alert alert-danger mb-0">{error}</div></div>;
+  if (!info)
     return (
-      <div className="min-h-screen bg-white text-red-600 flex items-center justify-center p-6 text-center">
-        <p className="text-xs font-bold">{error}</p>
+      <div className="container py-5 text-center">
+        <div className="spinner-border" role="status" />
+        <p className="mt-3 mb-0">Preparando las piezas…</p>
       </div>
     );
 
-  if (!dim)
-    return (
-      <div className="min-h-screen bg-white text-slate-700 flex flex-col items-center justify-center gap-3">
-        <div className="w-6 h-6 border-3 border-slate-400 border-t-transparent rounded-full animate-spin" />
-        <p className="text-[11px] font-medium">Cargando tablero amplio...</p>
-      </div>
-    );
-
-  const { W, H, W_real, offsetX, stageH } = dim;
-  const pct = Math.round((colocadas / piezas.length) * 100);
+  const { W, H, SW, SH } = info;
+  const estiloPieza = (p) => ({
+    width: p.w, height: p.h, backgroundImage: `url("${p.src}")`, backgroundRepeat: "no-repeat",
+    backgroundSize: `${p.iw}px ${p.ih}px`, backgroundPosition: `-${p.tx}px -${p.ty}px`,
+  });
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans select-none px-3 py-2 w-full">
+    <div className="container-fluid py-3">
       <style>{`
-        .pz-pieza { position:absolute; pointer-events:none; will-change:left,top;
-          transition:left .15s ease-out, top .15s ease-out, filter .15s, transform .15s;
-          filter:drop-shadow(0 3px 5px rgba(0,0,0,0.18)); }
-        .pz-pieza.pz-arrastrando { transition:filter .15s, transform .15s;
-          transform:scale(1.02); filter:drop-shadow(0 8px 12px rgba(0,0,0,0.25)); }
-        .pz-pieza.pz-fija { filter:none; }
-        .pz-pista { position:absolute; pointer-events:none; border:3px dashed #3b82f6;
-          border-radius:6px; animation:pz-pulso .7s ease-in-out infinite alternate; }
-        @keyframes pz-pulso { from{opacity:.3} to{opacity:1} }
+        .pz { position:absolute; pointer-events:none; transition:left .15s ease-out, top .15s ease-out, transform .15s;
+              filter:drop-shadow(0 3px 4px rgba(40,30,20,.35)); }
+        .pz.arrastrando { transition:transform .15s; transform:scale(1.03); filter:drop-shadow(0 10px 12px rgba(40,30,20,.45)); }
+        .pz.fija { filter:none; }
+        .pz-pista { position:absolute; pointer-events:none; border:3px dashed #0d6efd; border-radius:6px;
+                    animation:pz-pulso .7s ease-in-out infinite alternate; }
+        @keyframes pz-pulso { from{opacity:.25} to{opacity:1} }
       `}</style>
 
-      {/* Encabezado ultra pequeño y minimalista */}
-      <header className="w-full flex items-center justify-between py-1 px-2 mb-1 border-b border-slate-100 text-xs">
-        <h1 className="text-sm font-bold text-slate-800 tracking-tight">
-          Arma el castillo
-        </h1>
-
-        <div className="flex items-center gap-2">
-          <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono text-[11px] font-semibold">
-            {fmt(seg)}
-          </span>
-          <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono text-[11px] font-semibold">
-            {movs} movs
-          </span>
-          <label className="flex items-center gap-1 cursor-pointer bg-slate-50 px-2 py-0.5 rounded border border-slate-200 text-[11px]">
-            <input 
-              type="checkbox" 
-              checked={guia} 
-              onChange={(e) => setGuia(e.target.checked)} 
-              className="accent-blue-600 rounded scale-75" 
-            />
-            <span className="text-slate-600">Silueta</span>
-          </label>
-          <button 
-            onClick={darPista} 
-            disabled={gano} 
-            className="px-2 py-0.5 text-blue-600 hover:bg-blue-50 border border-blue-200 rounded text-[11px] font-medium transition-all disabled:opacity-40"
-          >
-            Pista
-          </button>
-          <button 
-            onClick={reiniciar} 
-            className="px-2 py-0.5 text-slate-600 hover:bg-slate-100 border border-slate-200 rounded text-[11px] font-medium transition-all"
-          >
-            Reiniciar
-          </button>
+      <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+        <h1 className="h4 mb-0">Arma el castillo</h1>
+        <div className="d-flex flex-wrap align-items-center gap-2">
+          <span className="badge text-bg-secondary fs-6">{fmt(seg)}</span>
+          <span className="badge text-bg-secondary fs-6">{movs} movs</span>
+          <div className="form-check form-switch mb-0">
+            <input className="form-check-input" type="checkbox" id="guia" checked={guia} onChange={(e) => setGuia(e.target.checked)} />
+            <label className="form-check-label" htmlFor="guia">Silueta</label>
+          </div>
+          <button className="btn btn-outline-primary btn-sm" onClick={darPista} disabled={gano}>Pista</button>
+          <button className="btn btn-outline-secondary btn-sm" onClick={reiniciar}>Reiniciar</button>
         </div>
-      </header>
-
-      {/* Barra de progreso ultra compacta */}
-      <div className="w-full flex items-center gap-2 mb-2 px-2">
-        <div className="flex-1 bg-slate-100 border border-slate-200 rounded-full h-1 overflow-hidden">
-          <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
-        </div>
-        <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap">{colocadas} de {piezas.length}</span>
       </div>
 
-      {/* Modal de Victoria */}
+      <div className="d-flex align-items-center gap-2 mb-3">
+        <div className="progress flex-grow-1" style={{ height: 8 }}>
+          <div className="progress-bar bg-success" style={{ width: `${(colocadas / piezas.length) * 100}%` }} />
+        </div>
+        <small className="text-body-secondary">{colocadas} de {piezas.length}</small>
+      </div>
+
+      {dudosas.length > 0 && (
+        <div className="alert alert-warning py-2 small">
+          No pude ubicar con certeza: Recurso {dudosas.join(", ")}. Revisa que <code>castillo.png</code> esté a 1x.
+        </div>
+      )}
       {gano && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-50 p-4">
-          <div className="p-3 bg-blue-100 border border-blue-300 rounded-xl text-blue-600 animate-bounce">
-            <Trophy className="w-10 h-10" />
-          </div>
-          <h2 className="text-xl font-bold text-slate-900">¡Castillo Armado con Éxito!</h2>
-          <p className="text-xs text-slate-600 text-center">
-            Completado en <span className="text-blue-600 font-mono font-bold">{fmt(seg)}</span> con <span className="text-slate-900 font-mono font-bold">{movs} movimientos</span>.
-          </p>
-          <button onClick={reiniciar} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-lg shadow transition-all">
-            Jugar de Nuevo
-          </button>
+        <div className="alert alert-success d-flex justify-content-between align-items-center">
+          <span>¡Castillo completo en {fmt(seg)} con {movs} movimientos!</span>
+          <button className="btn btn-success btn-sm" onClick={reiniciar}>Jugar de nuevo</button>
         </div>
       )}
 
-      {/* Tablero amplio de pantalla completa con piezas a tamaño real original */}
-      <div ref={wrapRef} className="w-full flex-1 flex justify-center pb-4 overflow-x-auto">
-        <div
-          ref={stageRef}
-          onPointerDown={alPresionar}
-          onPointerMove={alMover}
-          onPointerUp={alSoltar}
-          onPointerCancel={alSoltar}
-          style={{
-            width: W,
-            height: stageH,
-            position: "relative",
-            touchAction: "none",
-            cursor: "grab",
-            userSelect: "none",
-          }}
-          className="bg-slate-50 border border-slate-200 rounded-xl shadow-md overflow-hidden"
-        >
-          {/* Zona de Ensamblaje del Castillo (centrada en el ancho amplio) */}
-          <div 
-            style={{ position: "absolute", left: offsetX, top: 0, width: W_real, height: H }} 
-            className="bg-white border-b border-l border-r border-slate-200 flex items-center justify-center shadow-inner"
-          >
-            {!guia && (
-              <span className="text-[11px] text-slate-300 font-mono uppercase tracking-widest pointer-events-none">Zona de Ensamblaje</span>
-            )}
+      <div ref={wrapRef} className="w-100">
+        <div style={{ width: SW * escala, height: SH * escala, margin: "0 auto" }}>
+          <div ref={stageRef} className="border rounded-3 bg-body-tertiary"
+            onPointerDown={alPresionar} onPointerMove={alMover} onPointerUp={alSoltar} onPointerCancel={alSoltar}
+            style={{ position: "relative", width: SW, height: SH, transform: `scale(${escala})`,
+              transformOrigin: "top left", touchAction: "none", cursor: "grab", userSelect: "none" }}>
+
+            {/* Tablero */}
+            <div className="bg-white border rounded-3" style={{ position: "absolute", left: PAD, top: PAD, width: W, height: H }} />
+            {/* Bandeja */}
+            <div className="border border-2 rounded-3"
+              style={{ position: "absolute", left: PAD + W + GAP - 8, top: 8, right: 8, bottom: 8, borderStyle: "dashed" }} />
+
+            {/* Silueta guía */}
+            {guia && piezas.map((p) => (
+              <div key={`g-${p.id}`} style={{ position: "absolute", left: p.hx, top: p.hy, pointerEvents: "none",
+                filter: "brightness(0)", opacity: 0.08, ...estiloPieza(p) }} />
+            ))}
+
+            {/* Pista */}
+            {piezas.filter((p) => p.id === pista).map((p) => (
+              <div key="pista" className="pz-pista"
+                style={{ left: p.hx - 4, top: p.hy - 4, width: p.w + 8, height: p.h + 8, zIndex: 9999 }} />
+            ))}
+
+            {/* Piezas */}
+            {piezas.map((p) => (
+              <div key={p.id} className={`pz ${p.dragging ? "arrastrando" : ""} ${p.locked ? "fija" : ""}`}
+                style={{ left: p.x, top: p.y, zIndex: p.z, ...estiloPieza(p) }} />
+            ))}
           </div>
-
-          {/* Silueta guía */}
-          {guia && piezas.map((p) => (
-            <img
-              key={`g-${p.id}`}
-              src={p.src}
-              alt=""
-              draggable={false}
-              width={W_real}
-              height={H}
-              style={{
-                position: "absolute",
-                left: offsetX,
-                top: 0,
-                filter: "brightness(0) invert(0.85)",
-                opacity: 0.15,
-                pointerEvents: "none",
-              }}
-            />
-          ))}
-
-          {/* Pista */}
-          {piezas.filter((p) => p.id === pista).map((p) => (
-            <div
-              key="pista"
-              className="pz-pista"
-              style={{ left: p.bx - 3, top: p.by - 3, width: p.bw + 6, height: p.bh + 6, zIndex: 9999 }}
-            />
-          ))}
-
-          {/* Piezas del Rompecabezas */}
-          {piezas.map((p) => (
-            <div
-              key={p.id}
-              className={`pz-pieza ${p.dragging ? "pz-arrastrando" : ""} ${p.locked ? "pz-fija" : ""}`}
-              style={{
-                left: p.x,
-                top: p.y,
-                width: p.bw,
-                height: p.bh,
-                zIndex: p.z,
-                backgroundImage: `url(${p.src})`,
-                backgroundSize: `${W_real}px ${H}px`,
-                backgroundPosition: `-${p.bx - offsetX}px -${p.by}px`,
-                backgroundRepeat: "no-repeat",
-              }}
-            />
-          ))}
         </div>
       </div>
     </div>

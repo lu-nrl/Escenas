@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-   import { ubicarPiezas } from "./ubicarPiezas";
-
+import { ubicarPiezas } from "./ubicarPiezas";
 
 const NUMEROS = [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 8]; // frente -> fondo
 const RUTA = "/Material/1x/Piezas/1x/";
@@ -26,7 +25,6 @@ const lienzo = (img) => {
   ctx.drawImage(img, 0, 0);
   return ctx;
 };
-
 
 function recortar(img) {
   const ctx = lienzo(img), w = img.naturalWidth, h = img.naturalHeight;
@@ -84,7 +82,6 @@ export default function Escena2() {
     setPiezas(lista.map((p) => ({ ...p, ...pos[p.id], z: ++zTop.current, locked: false, dragging: false })));
   }, []);
 
-  
   useEffect(() => {
     (async () => {
       try {
@@ -105,10 +102,21 @@ export default function Escena2() {
           throw new Error("Falta el castillo completo: guarda su PNG en public/Material/castillo.png (exportado a 1x).");
         }
 
-        base.current = rec.map((r, i) => ({
+        // Mapear piezas iniciales
+        const piezasMapeadas = rec.map((r, i) => ({
           ...r, id: `p${NUMEROS[i]}`, n: NUMEROS[i], src: archivo(NUMEROS[i]),
           hx: PAD + homes[i].x, hy: PAD + homes[i].y, zFinal: NUMEROS.length - i,
         }));
+
+        // FILTRO ANTI-DUPLICADOS: Evita que dos piezas tengan exactamente el mismo destino
+        const seenPositions = new Set();
+        base.current = piezasMapeadas.filter((p) => {
+          const key = `${p.hx},${p.hy}`;
+          if (seenPositions.has(key)) return false;
+          seenPositions.add(key);
+          return true;
+        });
+
         setDudosas(homes.map((h, i) => (h.dudosa ? NUMEROS[i] : null)).filter(Boolean));
         repartir(base.current, W, H);
       } catch (e) {
@@ -117,7 +125,6 @@ export default function Escena2() {
     })();
   }, [repartir]);
 
-  
   useEffect(() => {
     if (!info || !wrapRef.current) return;
     const ro = new ResizeObserver(([e]) => setEscala(Math.min(e.contentRect.width / info.SW, 1.5)));

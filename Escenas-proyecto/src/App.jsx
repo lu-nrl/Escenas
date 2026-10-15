@@ -4,8 +4,8 @@ import Escena3 from "./Components/Escena3";
 
 function App() {
  // return <Escena1 />;//
-  return <Escena2 />;
-//return <Escena3 />//
+ // return <Escena2 />;//
+return <Escena3 />
 }
 
 export default App;
